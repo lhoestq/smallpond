@@ -1,0 +1,126 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  fmt:
+    name: Format Check
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install formatters
+        run: |
+          python -m pip install --upgrade pip
+          pip install black
+          
+      - name: Check code formatting
+        run: |
+          black --check .
+
+      # - name: Check typos
+      #   uses: crate-ci/typos@v1.29.10
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [self-hosted] # macos-latest
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+          
+      - name: Install gensort on Linux
+        if: matrix.os == 'self-hosted'
+        run: |
+          wget https://www.ordinal.com/try.cgi/gensort-linux-1.5.tar.gz
+          tar -xzf gensort-linux-1.5.tar.gz
+          chmod +x 64/gensort 64/valsort
+          export PATH=$PATH:$(pwd)/64
+
+      - name: Run tests
+        timeout-minutes: 20
+        run: |
+          pytest -n 4 -v -x --durations=50 --timeout=600 \
+            --junitxml=pytest.xml \
+            --cov-report term --cov-report xml:coverage.xml \
+            --cov=smallpond --cov=examples --cov=benchmarks --cov=tests \
+            tests/test_*.py
+            
+      - name: Archive test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            pytest.xml
+            coverage.xml
+
+  build-docs:
+    name: Build Documentation
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          
+      - name: Install dependencies
+        run: pip install -e .[docs]
+          
+      - name: Build HTML docs
+        run: |
+          cd docs
+          make html
+          
+      - name: Archive documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: docs/build/html
+
+  deploy-docs:
+    name: Deploy Documentation
+    runs-on: self-hosted
+    needs: [build-docs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: docs/build/html
+          
+      - name: Deploy to docs branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/build/html
+          destination_dir: ./
+          keep_files: true
+          branch: docs
+          force_orphan: true
