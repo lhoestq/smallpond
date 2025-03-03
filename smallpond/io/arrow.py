@@ -216,11 +216,11 @@ def _read_schema_from_file(
     filesystem: fsspec.AbstractFileSystem = None,
 ) -> arrow.Schema:
     path = path_or_range.path if isinstance(path_or_range, RowRange) else path_or_range
-    if not filesystem:
-        filesystem = fsspec.url_to_fs(path)[0]
-    schema = parquet.read_schema(
-        filesystem.unstrip_protocol(path) if filesystem else path, filesystem=filesystem
-    )
+    if filesystem:
+        path = filesystem._strip_protocol(path)
+    else:
+        filesystem, path = fsspec.url_to_fs(path)
+    schema = parquet.read_schema(path, filesystem=filesystem)
     if columns is not None:
         assert all(
             c in schema.names for c in columns
@@ -258,10 +258,12 @@ def _iter_record_batches_from_files(
         path = (
             path_or_range.path if isinstance(path_or_range, RowRange) else path_or_range
         )
-        if not filesystem:
-            filesystem = fsspec.url_to_fs(path)[0]
+        if filesystem:
+            path = filesystem._strip_protocol(path)
+        else:
+            filesystem, path = fsspec.url_to_fs(path)
         with parquet.ParquetFile(
-            filesystem.unstrip_protocol(path) if filesystem else path,
+            path,
             buffer_size=16 * MB,
             filesystem=filesystem,
         ) as file:
@@ -347,15 +349,16 @@ def load_from_parquet_files(
 def parquet_write_table(
     table, where, filesystem: fsspec.AbstractFileSystem = None, **write_table_args
 ) -> int:
-    if filesystem is not None:
-        return parquet.write_table(
-            table,
-            where=(filesystem.unstrip_protocol(where) if filesystem else where),
-            filesystem=filesystem,
-            **write_table_args,
-        )
-    with open(where, "wb", buffering=32 * MB) as file:
-        return parquet.write_table(table, where=file, **write_table_args)
+    if filesystem:
+        where = filesystem._strip_protocol(where)
+    else:
+        filesystem, where = fsspec.url_to_fs(where)
+    return parquet.write_table(
+        table,
+        where=where,
+        filesystem=filesystem,
+        **write_table_args,
+    )
 
 
 def dump_to_parquet_files(

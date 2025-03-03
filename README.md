@@ -48,6 +48,28 @@ df.write_parquet("output/")
 print(df.to_pandas())
 ```
 
+### Reading from Hugging Face
+
+```python
+import smallpond
+
+# Initialize session
+sp = smallpond.init()
+
+# Load data directly from S3
+df = sp.read_parquet("hf://datasets/username/dataset_name/*.parquet")
+
+# You can also provide explicit credentials
+df = sp.read_parquet(
+    "hf://datasets/username/dataset_name/*.parquet",
+    hf_token="hf_token"
+)
+
+# Process data as usual
+df = sp.partial_sql("SELECT * FROM {0} LIMIT 10", df)
+print(df.to_pandas())
+```
+
 ### Reading from S3
 
 ```python
