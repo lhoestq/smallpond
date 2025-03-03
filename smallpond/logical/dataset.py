@@ -1,6 +1,5 @@
 import copy
 import functools
-import glob
 import os.path
 import random
 import re
@@ -31,6 +30,7 @@ from smallpond.logical.udf import UDFContext
 
 magic_check = re.compile(r"([*?]|\[.*\])")
 magic_check_bytes = re.compile(rb"([*?]|\[.*\])")
+duckdb_httpfs_supported_protocols = ["s3://", "hf://"]
 
 
 def has_magic(s):
@@ -41,9 +41,10 @@ def has_magic(s):
     return match is not None
 
 
-def is_s3_path(path: str) -> bool:
+def is_remote_path(path: str) -> bool:
     """
-    Check if a path is an S3 URL.
+    Check if a path is a remote path supported by DuckDB.
+    Supported in httpfs: s3:// and hf://
     
     Parameters
     ----------
@@ -55,8 +56,14 @@ def is_s3_path(path: str) -> bool:
     bool
         True if the path is an S3 URL, False otherwise
     """
-    return path.startswith('s3://')
+    return any(
+        path.startswith(protocol)
+        for protocol in duckdb_httpfs_supported_protocols
+    )
 
+def duckdb_glob(path):
+    sql_query = f"select file from glob('{path}');"
+    return [x[0] for x in duckdb.sql(sql_query).fetchall()]
 
 class DataSet(object):
     """
@@ -66,7 +73,6 @@ class DataSet(object):
     __slots__ = (
         "paths",
         "root_dir",
-        "recursive",
         "columns",
         "__dict__",
         "_union_by_name",
@@ -79,7 +85,6 @@ class DataSet(object):
         self,
         paths: Union[str, List[str]],
         root_dir: Optional[str] = "",
-        recursive=False,
         columns: Optional[List[str]] = None,
         union_by_name=False,
     ) -> None:
@@ -93,8 +98,6 @@ class DataSet(object):
             e.g. `['data/100.parquet', '/datasetA/*.parquet']`.
         root_dir, optional
             Relative paths in `paths` would be resolved under `root_dir` if specified.
-        recursive, optional
-            Resolve path patterns recursively if true.
         columns, optional
             Only load the specified columns if not None.
         union_by_name, optional
@@ -104,8 +107,6 @@ class DataSet(object):
         "The paths to the dataset files."
         self.root_dir = os.path.abspath(root_dir) if root_dir is not None else None
         "The root directory of paths."
-        self.recursive = recursive
-        "Whether to resolve path patterns recursively."
         self.columns = columns
         "The columns to load from the dataset files."
         self._union_by_name = union_by_name
@@ -151,15 +152,13 @@ class DataSet(object):
         self,
         paths: Optional[List[str]] = None,
         root_dir: Optional[str] = "",
-        recursive=None,
     ) -> None:
         """
-        Reset the dataset with new paths, root_dir, and recursive flag.
+        Reset the dataset with new paths, root_dir.
         """
         self.partition_by_files.cache_clear()
         self.paths = paths or []
         self.root_dir = os.path.abspath(root_dir) if root_dir is not None else None
-        self.recursive = recursive if recursive is not None else self.recursive
         self._resolved_paths = None
         self._absolute_paths = None
         self._resolved_num_rows = None
@@ -193,9 +192,8 @@ class DataSet(object):
         for path in self.paths:
             if has_magic(path):
                 if any(
-                    glob.iglob(
-                        os.path.join(self.root_dir or "", path),
-                        recursive=self.recursive,
+                    duckdb_glob(
+                        os.path.join(self.root_dir or "", path)
                     )
                 ):
                     return False
@@ -223,9 +221,7 @@ class DataSet(object):
                     resolved_paths.append(path)
             if wildcard_paths:
                 if len(wildcard_paths) == 1:
-                    expanded_paths = glob.glob(
-                        wildcard_paths[0], recursive=self.recursive
-                    )
+                    expanded_paths = duckdb_glob(wildcard_paths[0])
                 else:
                     logger.debug(
                         "resolving {} paths with wildcards in {}",
@@ -236,7 +232,7 @@ class DataSet(object):
                         expanded_paths = [
                             p
                             for paths in pool.map(
-                                lambda p: glob.glob(p, recursive=self.recursive),
+                                lambda p: duckdb_glob(p),
                                 wildcard_paths,
                             )
                             for p in paths
@@ -267,7 +263,7 @@ class DataSet(object):
                 self._absolute_paths = []
                 for p in sorted(self.paths):
                     # Don't join S3 paths with root_dir
-                    if is_s3_path(p):
+                    if is_remote_path(p):
                         self._absolute_paths.append(p)
                     else:
                         self._absolute_paths.append(os.path.join(self.root_dir, p))
@@ -409,7 +405,6 @@ class PartitionedDataSet(DataSet):
         super().__init__(
             absolute_paths,
             datasets[0].root_dir,
-            datasets[0].recursive,
             datasets[0].columns,
             datasets[0].union_by_name,
         )
@@ -479,11 +474,10 @@ class CsvDataSet(DataSet):
         parallel=True,
         header=False,
         root_dir: Optional[str] = "",
-        recursive=False,
         columns: Optional[List[str]] = None,
         union_by_name=False,
     ) -> None:
-        super().__init__(paths, root_dir, recursive, columns, union_by_name)
+        super().__init__(paths, root_dir, columns, union_by_name)
         assert isinstance(
             schema, OrderedDict
         ), f"type of csv schema is not OrderedDict: {type(schema)}"
@@ -503,7 +497,6 @@ class CsvDataSet(DataSet):
             datasets[0].delim,
             datasets[0].max_line_size,
             datasets[0].parallel,
-            recursive=any(dataset.recursive for dataset in datasets),
             columns=datasets[0].columns,
             union_by_name=any(dataset.union_by_name for dataset in datasets),
         )
@@ -545,11 +538,10 @@ class JsonDataSet(DataSet):
         format="newline_delimited",
         max_object_size=1 * GB,
         root_dir: Optional[str] = "",
-        recursive=False,
         columns: Optional[List[str]] = None,
         union_by_name=False,
     ) -> None:
-        super().__init__(paths, root_dir, recursive, columns, union_by_name)
+        super().__init__(paths, root_dir, columns, union_by_name)
         self.schema = schema
         self.format = format
         self.max_object_size = max_object_size
@@ -563,7 +555,6 @@ class JsonDataSet(DataSet):
             datasets[0].schema,
             datasets[0].format,
             datasets[0].max_object_size,
-            recursive=any(dataset.recursive for dataset in datasets),
             columns=datasets[0].columns,
             union_by_name=any(dataset.union_by_name for dataset in datasets),
         )
@@ -596,12 +587,11 @@ class ParquetDataSet(DataSet):
         self,
         paths: List[str],
         root_dir: Optional[str] = "",
-        recursive=False,
         columns: Optional[List[str]] = None,
         generated_columns: Optional[List[str]] = None,
         union_by_name=False,
     ) -> None:
-        super().__init__(paths, root_dir, recursive, columns, union_by_name)
+        super().__init__(paths, root_dir, columns, union_by_name)
         self.generated_columns = generated_columns or []
         "Generated columns of DuckDB `read_parquet` function. e.g. `file_name`, `file_row_number`."
         self._resolved_row_ranges: List[RowRange] = None
@@ -628,7 +618,6 @@ class ParquetDataSet(DataSet):
         dataset = ParquetDataSet(
             paths=[p for dataset in datasets for p in dataset.absolute_paths],
             root_dir=None,
-            recursive=any(dataset.recursive for dataset in datasets),
             columns=datasets[0].columns,
             generated_columns=datasets[0].generated_columns,
             union_by_name=any(dataset.union_by_name for dataset in datasets),
@@ -651,12 +640,11 @@ class ParquetDataSet(DataSet):
         self,
         paths: Optional[List[str]] = None,
         root_dir: Optional[str] = "",
-        recursive=None,
     ) -> None:
         """
         NOTE: all row ranges will be cleared. DO NOT call this if you want to keep partial files.
         """
-        super().reset(paths, root_dir, recursive)
+        super().reset(paths, root_dir)
         self._resolved_row_ranges = None
         self.partition_by_files.cache_clear()
         self.partition_by_rows.cache_clear()
@@ -675,12 +663,12 @@ class ParquetDataSet(DataSet):
                 def resolve_row_range(path: str) -> RowRange:
                     # read parquet metadata to get number of rows
                     try:
-                        # For S3 paths, we need to use DuckDB to read the metadata
-                        if is_s3_path(path):
+                        # For S3 or HF paths, we need to use DuckDB to read the metadata
+                        if is_remote_path(path):
                             import duckdb
                             
                             # Use the global DuckDB connection that has access to the S3 secret
-                            # The S3 secret was created in the Session.read_parquet method
+                            # The S3 or HF secret was created in the Session.read_parquet method
                             try:
                                 # Query the metadata of the parquet file using parquet_metadata
                                 # This will automatically use the S3 secret we created earlier
@@ -697,7 +685,7 @@ class ParquetDataSet(DataSet):
                                 )
                             except Exception as ex:
                                 logger.opt(exception=ex).warning(
-                                    f"failed to read parquet metadata for S3 path {path}, assuming empty"
+                                    f"failed to read parquet metadata for remote path {path}, assuming empty"
                                 )
                                 return RowRange(path, 0, 0, 0, 0)
                         else:

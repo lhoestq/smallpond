@@ -48,7 +48,6 @@ class Session(SessionBase):
     def read_parquet(
         self,
         paths: Union[str, List[str]],
-        recursive: bool = False,
         columns: Optional[List[str]] = None,
         union_by_name: bool = False,
         s3_region: Optional[str] = None,
@@ -57,6 +56,7 @@ class Session(SessionBase):
         s3_session_token: Optional[str] = None,
         s3_endpoint: Optional[str] = None,
         s3_url_style: Optional[str] = None,
+        hf_token: Optional[str] = None
     ) -> DataFrame:
         """
         Create a DataFrame from Parquet files.
@@ -65,8 +65,6 @@ class Session(SessionBase):
         ----------
         paths : Union[str, List[str]]
             Path(s) to parquet files. Can be local file paths or S3 URLs (s3://bucket/path).
-        recursive : bool, optional
-            Whether to recursively search for files in subdirectories, by default False
         columns : Optional[List[str]], optional
             List of columns to read, by default None (read all columns)
         union_by_name : bool, optional
@@ -83,6 +81,8 @@ class Session(SessionBase):
             Custom S3 endpoint URL for non-AWS S3-compatible storage, by default None
         s3_url_style : Optional[str], optional
             S3 URL style, either 'path' or 'vhost', by default None
+        hf_token : Optional[str], optional
+            Hugging Face token for HF datasets access, by default None
             
         Returns
         -------
@@ -128,12 +128,36 @@ class Session(SessionBase):
                 # Create a temporary secret (valid for this session)
                 secret_sql = f"CREATE OR REPLACE TEMPORARY SECRET smallpond_s3_secret (TYPE S3, {', '.join(secret_params)})"
                 duckdb.sql(secret_sql)
+
+        # Check if any path is an hF URL
+        is_hf = False
+        if isinstance(paths, str):
+            is_hf = paths.startswith('hf://')
+        else:
+            is_hf = any(path.startswith('hf://') for path in paths)
+        
+        # If reading from HF, we need to configure HF credentials using DuckDB Secrets Manager
+        if is_hf:
+            import duckdb
             
-            # Note: We don't need to close a connection here because duckdb.sql() uses a global connection
-            # that remains active for the session
+            # Create the temporary secret for HF access that will persist for the session
+            secret_params = []
+            
+            if hf_token:
+                secret_params.append(f"TOKEN '{hf_token}'")
+            else:
+                secret_params.append("PROVIDER credential_chain")
+            
+            if secret_params:
+                # Create a temporary secret (valid for this session)
+                secret_sql = f"CREATE OR REPLACE TEMPORARY SECRET smallpond_hf_secret (TYPE huggingface, {', '.join(secret_params)})"
+                duckdb.sql(secret_sql)
+            
+        # Note: We don't need to close a connection here because duckdb.sql() uses a global connection
+        # that remains active for the session
         
         dataset = ParquetDataSet(
-            paths, columns=columns, union_by_name=union_by_name, recursive=recursive
+            paths, columns=columns, union_by_name=union_by_name
         )
         plan = DataSourceNode(self._ctx, dataset)
         return DataFrame(self, plan)

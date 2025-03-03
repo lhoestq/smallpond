@@ -216,6 +216,8 @@ def _read_schema_from_file(
     filesystem: fsspec.AbstractFileSystem = None,
 ) -> arrow.Schema:
     path = path_or_range.path if isinstance(path_or_range, RowRange) else path_or_range
+    if not filesystem:
+        filesystem = fsspec.url_to_fs(path)[0]
     schema = parquet.read_schema(
         filesystem.unstrip_protocol(path) if filesystem else path, filesystem=filesystem
     )
@@ -256,6 +258,8 @@ def _iter_record_batches_from_files(
         path = (
             path_or_range.path if isinstance(path_or_range, RowRange) else path_or_range
         )
+        if not filesystem:
+            filesystem = fsspec.url_to_fs(path)[0]
         with parquet.ParquetFile(
             filesystem.unstrip_protocol(path) if filesystem else path,
             buffer_size=16 * MB,
