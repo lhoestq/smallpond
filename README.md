@@ -56,7 +56,7 @@ import smallpond
 # Initialize session
 sp = smallpond.init()
 
-# Load data directly from S3
+# Load data directly from HF
 df = sp.read_parquet("hf://datasets/username/dataset_name/*.parquet")
 
 # You can also provide explicit credentials
