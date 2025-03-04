@@ -7,12 +7,16 @@
 
 A lightweight data processing framework built on [DuckDB] and [3FS].
 
+This fork adds Hugging Face datasets support.
+
+This is a fork of [this repo](https://github.com/definite-app/smallpond) which adds some object store support to the [original smallpond](https://github.com/deepseek-ai/smallpond)
+
 ## Features
 
 - 🚀 High-performance data processing powered by DuckDB
 - 🌍 Scalable to handle PB-scale datasets
 - 🛠️ Easy operations with no long-running services
-- 🪣 Direct reading from S3 storage
+- 🤗 Direct reading from Hugging Face datasets
 
 ## Installation
 
